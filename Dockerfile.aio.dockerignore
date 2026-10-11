@@ -1,0 +1,36 @@
+# Build context for the all-in-one image: the Next.js app plus api/ (the
+# executor) and config/ (the default framework config).
+node_modules
+**/node_modules
+.next
+.git
+.github
+.scratch
+.venv
+**/.venv
+__pycache__
+**/__pycache__
+.pytest_cache
+**/.pytest_cache
+.ruff_cache
+**/.ruff_cache
+tests
+api/tests
+docs
+*.md
+.env
+.env.*
+tsconfig.tsbuildinfo
+Dockerfile*
+docker-compose*.yml
+
+# The vendored mobilerun checkout is built into the image, but only the part
+# hatchling needs for the wheel: its 600 MB virtualenv, tests, docs and static
+# assets stay out of the build context.
+api/mobilerun/**
+!api/mobilerun/mobilerun
+!api/mobilerun/mobilerun/**
+!api/mobilerun/pyproject.toml
+!api/mobilerun/README.md
+api/mobilerun/**/__pycache__
+api/mobilerun/**/*.py[cod]

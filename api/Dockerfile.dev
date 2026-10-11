@@ -1,0 +1,40 @@
+# Development image for the executor. docker-compose.yml (profile "full")
+# bind-mounts api/ over /srv/executor, so edits to executor/ and to the vendored
+# mobilerun/ apply live. The virtualenv sits outside the mount, at /opt/venv,
+# with both packages installed in editable mode pointing at the mounted source.
+# Rebuild (`docker compose build executor`) after changing uv.lock.
+FROM python:3.13-slim-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends android-tools-adb ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /srv/executor
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH="/opt/venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1
+
+COPY mobilerun/pyproject.toml mobilerun/README.md ./mobilerun/
+COPY mobilerun/mobilerun ./mobilerun/mobilerun
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --extra dev --no-install-project
+COPY executor ./executor
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --extra dev \
+    && uv pip install --python /opt/venv -e ./mobilerun
+
+ENV EXECUTOR_HOST=0.0.0.0 EXECUTOR_PORT=8765 MOBILERUN_STREAM_SCREENSHOTS=1
+EXPOSE 8765
+# Seed the framework config from the repo default (mounted at /srv/defaults) on
+# first start, then run under watchfiles (ships with uvicorn[standard]), which
+# restarts the executor when a Python file in the executor or framework changes.
+CMD ["sh", "-c", "\
+  if [ -n \"$MOBILERUN_CONFIG\" ] && [ ! -e \"$MOBILERUN_CONFIG\" ] && [ -e /srv/defaults/mobilerun.yaml ]; then \
+    mkdir -p \"$(dirname \"$MOBILERUN_CONFIG\")\" && cp /srv/defaults/mobilerun.yaml \"$MOBILERUN_CONFIG\"; \
+  fi && \
+  exec watchfiles --filter python mobilerun-executor executor mobilerun/mobilerun"]

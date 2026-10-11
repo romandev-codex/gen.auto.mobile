@@ -1,0 +1,222 @@
+import { describe, expect, it } from "vitest"
+
+const json = (body: unknown) => ({
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+})
+
+async function create(payload: unknown) {
+  const { POST } = await import("@/app/api/tasks/route")
+  const res = await POST(
+    new Request("http://app/api/tasks", { method: "POST", ...json(payload) }),
+    {}
+  )
+  return { status: res.status, body: await res.json() }
+}
+
+async function list() {
+  const { GET } = await import("@/app/api/tasks/route")
+  const res = await GET(new Request("http://app/api/tasks"), {})
+  return { status: res.status, body: await res.json() }
+}
+
+async function one(
+  method: "GET" | "PATCH" | "DELETE",
+  id: string,
+  payload?: unknown
+) {
+  const mod = await import("@/app/api/tasks/[id]/route")
+  const handler = mod[method]
+  const res = await handler(
+    new Request(`http://app/api/tasks/${id}`, {
+      method,
+      ...(payload ? json(payload) : {}),
+    }),
+    { params: Promise.resolve({ id }) }
+  )
+  return { status: res.status, body: await res.json() }
+}
+
+const valid = {
+  name: "Check inbox",
+  start: { type: "url", value: "https://mail.example.com" },
+  goal: "Open the newest email and summarise it",
+  end: "Go back to the home screen",
+  options: { vision: true, reasoning: false, maxSteps: 20 },
+  variables: [{ key: "account", value: "work" }],
+}
+
+describe("tasks", () => {
+  it("creates a task with all fields and lists it with empty relations", async () => {
+    const created = await create(valid)
+    expect(created.status).toBe(201)
+    expect(created.body.task).toMatchObject({
+      ...valid,
+      end: "Go back to the home screen",
+    })
+    expect(created.body.task.id).toBeTruthy()
+
+    const { body } = await list()
+    const row = body.tasks.find(
+      (t: { id: string }) => t.id === created.body.task.id
+    )
+    expect(row).toMatchObject({
+      name: "Check inbox",
+      lastRun: null,
+      scheduleCount: 0,
+    })
+  })
+
+  it("applies defaults when only name and goal are given", async () => {
+    const { status, body } = await create({
+      name: "Minimal",
+      goal: "Do a thing",
+    })
+    expect(status).toBe(201)
+    expect(body.task).toMatchObject({
+      start: null,
+      end: null,
+      options: {
+        agent: "mobilerun",
+        vision: false,
+        reasoning: false,
+        maxSteps: 15,
+      },
+      variables: [],
+    })
+  })
+
+  it("stores the Jev agent choice and switches it with a patch", async () => {
+    const { status, body } = await create({
+      ...valid,
+      options: { agent: "jev", maxSteps: 30 },
+    })
+    expect(status).toBe(201)
+    expect(body.task.options).toEqual({
+      agent: "jev",
+      vision: false,
+      reasoning: false,
+      maxSteps: 30,
+    })
+    const updated = await one("PATCH", body.task.id, {
+      options: { agent: "mobilerun" },
+    })
+    expect(updated.body.task.options).toMatchObject({
+      agent: "mobilerun",
+      maxSteps: 30,
+    })
+    expect((await create({ ...valid, options: { agent: "gpt" } })).status).toBe(
+      400
+    )
+  })
+
+  it("stores a device profile name, clears it with an empty patch and rejects long names", async () => {
+    const { status, body } = await create({ ...valid, deviceUser: "  Work " })
+    expect(status).toBe(201)
+    expect(body.task.deviceUser).toBe("Work")
+
+    const cleared = await one("PATCH", body.task.id, { deviceUser: "" })
+    expect(cleared.status).toBe(200)
+    expect(cleared.body.task.deviceUser).toBeNull()
+
+    expect((await create({ ...valid })).body.task.deviceUser).toBeNull()
+    expect(
+      (await create({ ...valid, deviceUser: "x".repeat(61) })).status
+    ).toBe(400)
+  })
+
+  it("rejects invalid input with a validation_error envelope", async () => {
+    const missingGoal = await create({ name: "x" })
+    expect(missingGoal.status).toBe(400)
+    expect(missingGoal.body.error.code).toBe("validation_error")
+    expect(missingGoal.body.error.message).toContain("goal")
+
+    expect(
+      (await create({ ...valid, start: { type: "url", value: "not a url" } }))
+        .status
+    ).toBe(400)
+    expect((await create({ ...valid, options: { maxSteps: 0 } })).status).toBe(
+      400
+    )
+    expect(
+      (await create({ ...valid, variables: [{ key: "1bad", value: "" }] }))
+        .status
+    ).toBe(400)
+    const dupe = await create({
+      ...valid,
+      variables: [
+        { key: "a", value: "1" },
+        { key: "a", value: "2" },
+      ],
+    })
+    expect(dupe.status).toBe(400)
+    expect(dupe.body.error.message).toContain("Duplicate")
+  })
+
+  it("reads, updates and deletes a task", async () => {
+    const { body: created } = await create(valid)
+    const id = created.task.id
+
+    expect((await one("GET", id)).body.task.name).toBe("Check inbox")
+
+    const updated = await one("PATCH", id, { name: "Renamed", end: "" })
+    expect(updated.status).toBe(200)
+    expect(updated.body.task).toMatchObject({
+      name: "Renamed",
+      end: null,
+      goal: valid.goal,
+    })
+
+    const deleted = await one("DELETE", id)
+    expect(deleted.status).toBe(200)
+    expect(deleted.body).toEqual({ deletedSchedules: 0 })
+    expect((await one("GET", id)).status).toBe(404)
+    expect((await one("GET", "not-an-id")).status).toBe(404)
+  })
+
+  it("duplicates a task with a unique copy name", async () => {
+    const { body: created } = await create({ name: "Dup me", goal: "g" })
+    const { POST } = await import("@/app/api/tasks/[id]/duplicate/route")
+    const dup = async () => {
+      const res = await POST(new Request("http://app/x", { method: "POST" }), {
+        params: Promise.resolve({ id: created.task.id }),
+      })
+      return (await res.json()).task
+    }
+    expect((await dup()).name).toBe("Dup me (copy)")
+    expect((await dup()).name).toBe("Dup me (copy 2)")
+    expect((await dup()).goal).toBe("g")
+  })
+
+  it("a partial options update keeps the untouched option fields", async () => {
+    const { body: created } = await create({
+      ...valid,
+      options: { vision: false, reasoning: true, maxSteps: 200 },
+    })
+    const updated = await one("PATCH", created.task.id, {
+      options: { vision: true },
+    })
+    expect(updated.status).toBe(200)
+    expect(updated.body.task.options).toEqual({
+      agent: "mobilerun",
+      vision: true,
+      reasoning: true,
+      maxSteps: 200,
+    })
+  })
+
+  it("a patch never resets fields it does not name", async () => {
+    const { body: created } = await create(valid)
+    const updated = await one("PATCH", created.task.id, {
+      options: { vision: false },
+    })
+    expect(updated.status).toBe(200)
+    expect(updated.body.task).toMatchObject({
+      start: { type: "url", value: "https://mail.example.com" },
+      end: "Go back to the home screen",
+      variables: [{ key: "account", value: "work" }],
+      options: { vision: false, reasoning: false, maxSteps: 20 },
+    })
+    expect((await one("PATCH", created.task.id, {})).status).toBe(400)
+  })
+})

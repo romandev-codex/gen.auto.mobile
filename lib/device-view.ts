@@ -1,0 +1,51 @@
+/** Client-safe device shape and helpers (no database imports). */
+export type DeviceView = {
+  serial: string
+  displayName: string | null
+  model: string | null
+  online: boolean
+  adbState: string | null
+  lastSeenAt: string | null
+  activeRunId: string | null
+  lastTemperatureC: number | null
+  lastBatteryLevel: number | null
+  cooldownUntil: string | null
+}
+
+/** One live battery reading, as returned by the thermal route. */
+export type DeviceTemperatureView = {
+  serial: string
+  /** °C, or null when the device reports no usable sensor. */
+  temperatureC: number | null
+  /** The configured maximum; 0 when the check is disabled. */
+  limitC: number
+  /** Charge in percent, or null when the device does not report it. */
+  batteryLevel: number | null
+  /** The configured minimum charge; 0 when the check is disabled. */
+  minBatteryLevel: number
+  readAt: string
+}
+
+/** One Android user (profile) on a device. */
+export type DeviceUserView = {
+  id: number
+  name: string
+  /** Started in the background or foreground. */
+  running: boolean
+  /** The user in the foreground. */
+  current: boolean
+}
+
+/** The Mobilerun Portal as installed into one profile, as the portal route reports it. */
+export type DevicePortalInstallView = {
+  userId: number
+  /** The version the Portal reports once installed; null when it could not be read. */
+  version: string | null
+  accessibilityEnabled: boolean
+}
+
+export function deviceLabel(
+  d: Pick<DeviceView, "displayName" | "model" | "serial">
+): string {
+  return d.displayName || d.model || d.serial
+}

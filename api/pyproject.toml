@@ -1,0 +1,45 @@
+[project]
+name = "mobilerun-executor"
+version = "0.1.0"
+description = "Stateless execution service wrapping the mobilerun framework for the mobilerun app"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.11.0",
+    "httpx>=0.27.0",
+    "mobilerun>=0.6.19",
+]
+
+# mobilerun is built from the checkout vendored in api/mobilerun rather than
+# pulled from PyPI, so the app, the executor and the framework ship together.
+# Not editable: the built package lands in .venv, which is what the all-in-one
+# image copies into its runtime stage. `make mobilerun-local` overlays an
+# editable install on top for development.
+[tool.uv.sources]
+mobilerun = { path = "mobilerun" }
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "anyio>=4.0.0",
+    "httpx>=0.27.0",
+    "ruff>=0.13.0",
+]
+
+[project.scripts]
+mobilerun-executor = "executor.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["executor"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

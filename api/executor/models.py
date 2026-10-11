@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class HealthResponse(BaseModel):
+    status: str
+    version: str
+    mobilerunVersion: str
+
+
+class LlmProfileInfo(BaseModel):
+    role: str
+    provider: str
+    model: str
+
+
+class JevInfo(BaseModel):
+    configured: bool
+    model: str
+    provider: str = "TypeSafe"
+
+
+class ConfigResponse(BaseModel):
+    profiles: list[LlmProfileInfo]
+    configPath: str | None = None
+    jev: JevInfo | None = None
+
+
+class ErrorBody(BaseModel):
+    code: str
+    message: str
+
+
+class ErrorResponse(BaseModel):
+    error: ErrorBody
+
+
+class DeviceResponse(BaseModel):
+    serial: str
+    state: str
+    model: str | None = None
+
+
+class DeviceThermalResponse(BaseModel):
+    """Battery temperature in °C and charge in percent; each null when the device does not report it."""
+
+    temperatureC: float | None = None
+    batteryLevel: int | None = None
+
+
+class DeviceDimResponse(BaseModel):
+    dimmed: bool
+
+
+class DeviceUserResponse(BaseModel):
+    """One Android user (profile) on the device."""
+
+    id: int
+    name: str
+    running: bool
+    current: bool
+
+
+class CreateDeviceUserRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+class PortalInstallResponse(BaseModel):
+    """The Mobilerun Portal as installed into one Android user (profile)."""
+
+    userId: int
+    version: str | None = None
+    accessibilityEnabled: bool

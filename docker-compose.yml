@@ -1,0 +1,81 @@
+# Development compose file. MongoDB is external (e.g. Atlas): set MONGODB_URI in
+# .env. `docker compose up -d mongo` starts a local one if you need it instead.
+#
+# `--profile full` runs the app and the executor in containers: the repo is
+# bind-mounted, so Next.js hot-reloads and the executor restarts on Python
+# changes. Without it you run both on the host (`make dev`).
+#
+#   docker compose --profile full up --build
+#
+# Rebuild the executor after changing api/uv.lock (`docker compose build executor`);
+# the app reinstalls node_modules on its own when package-lock.json changes.
+#
+# Phones: the container has its own adb. Either connect over network adb
+# (`docker compose exec executor adb connect <phone-ip>:5555`), or point it at an
+# adb server on the host by setting in .env:
+#   ANDROID_ADB_SERVER_HOST=host.docker.internal
+#   ADB_SERVER_SOCKET=tcp:host.docker.internal:5037
+# and starting the host server with `adb kill-server && adb -a nodaemon server start`.
+services:
+  mongo:
+    profiles: ["mongo"]
+    image: mongo:8
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  executor:
+    profiles: ["full"]
+    build:
+      context: ./api
+      dockerfile: Dockerfile.dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      EXECUTOR_TOKEN: ${EXECUTOR_TOKEN:-change-me}
+      EXECUTOR_HOST: 0.0.0.0
+      EXECUTOR_PORT: "8765"
+      MOBILERUN_CONFIG: /config/config.yaml
+      ANDROID_ADB_SERVER_HOST: host.docker.internal
+      ANDROID_ADB_SERVER_PORT: "5037"      
+    volumes:
+      - ./api:/srv/executor
+      - ./config:/srv/defaults:ro
+      # Seeded from config/mobilerun.yaml on first start. Set MOBILERUN_CONFIG_DIR
+      # to a host directory holding config.yaml to use your own instead.
+      - ${MOBILERUN_CONFIG_DIR:-executor-config}:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8765:8765"
+
+  app:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      EXECUTOR_URL: http://executor:8765
+      EXECUTOR_TOKEN: ${EXECUTOR_TOKEN:-change-me}
+      ANDROID_ADB_SERVER_HOST: host.docker.internal
+      ANDROID_ADB_SERVER_PORT: "5037"
+    volumes:
+      - .:/app
+      # Container-only copies, so they do not clash with a host install/build.
+      - app-node-modules:/app/node_modules
+      - app-next:/app/.next
+    ports:
+      - "3000:3000"
+    depends_on:
+      - executor
+
+volumes:
+  mongo-data:
+  executor-config:
+  app-node-modules:
+  app-next:

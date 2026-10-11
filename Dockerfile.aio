@@ -1,0 +1,96 @@
+# All-in-one production image: the Python executor and the Next.js app in one
+# container, supervised by supervisord. Only port 3000 is published; the executor
+# stays on loopback inside the container. MongoDB is external (e.g. Atlas).
+#
+#   docker build -f Dockerfile.aio -t mobilerun:latest .
+#   docker run -d --name mobilerun -p 3000:3000 \
+#     -e MONGODB_URI='mongodb+srv://...' -v mobilerun-config:/config mobilerun:latest
+#
+# See docker/README.md for USB/adb and configuration.
+
+# ---------------------------------------------------------------- Next.js build
+FROM node:22-bookworm-slim AS web-deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:22-bookworm-slim AS web-build
+WORKDIR /app
+COPY --from=web-deps /app/node_modules ./node_modules
+COPY . .
+# Build-time placeholders; real values come from the runtime environment.
+ENV MONGODB_URI=mongodb://127.0.0.1:27017/mobilerun EXECUTOR_TOKEN=build
+RUN npm run build
+
+# --------------------------------------------------------------- executor build
+# Same Debian release and Python minor as the runtime stage, so the venv is
+# copied over as-is.
+FROM python:3.13-slim-bookworm AS executor-build
+# Pin a uv version here if you want byte-identical rebuilds.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+WORKDIR /srv/executor
+ENV UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
+# The mobilerun framework is a path dependency of api/ (see its [tool.uv.sources]),
+# so its source has to be in place before the sync. hatchling only needs the
+# package directory plus pyproject.toml and README.md to build the wheel.
+COPY api/mobilerun/pyproject.toml api/mobilerun/README.md ./mobilerun/
+COPY api/mobilerun/mobilerun ./mobilerun/mobilerun
+COPY api/pyproject.toml api/uv.lock ./
+# The cache mount keeps rebuilds cheap: editing mobilerun invalidates this layer,
+# but the third-party wheels are still unpacked from the uv cache rather than
+# re-downloaded. It is build-only state and never lands in the image.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+COPY api/executor ./executor
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# ---------------------------------------------------------------------- runtime
+FROM python:3.13-slim-bookworm AS runtime
+
+# adb for phones reached over USB or network adb.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl libstdc++6 android-tools-adb supervisor tini; \
+    rm -rf /var/lib/apt/lists/*
+
+# Node runtime only: the standalone server needs the binary, not npm.
+COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+
+# The executor and its virtualenv.
+COPY --from=executor-build /srv/executor /srv/executor
+ENV PATH="/srv/executor/.venv/bin:${PATH}"
+
+# The Next.js standalone server.
+WORKDIR /srv/app
+COPY --from=web-build /app/.next/standalone ./
+COPY --from=web-build /app/.next/static ./.next/static
+COPY --from=web-build /app/public ./public
+
+# Default framework config, seeded into /config on first start.
+COPY config/mobilerun.yaml /srv/defaults/config.yaml
+COPY docker/supervisord.conf /etc/supervisor/supervisord.conf
+COPY docker/entrypoint.sh docker/fatal-exit.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/fatal-exit.sh \
+    && mkdir -p /config /var/log/supervisor \
+    && chown -R 1000:1000 /config /var/log/supervisor /srv
+
+ENV NODE_ENV=production \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0 \
+    MONGODB_DB=mobilerun \
+    EXECUTOR_URL=http://127.0.0.1:8765 \
+    EXECUTOR_HOST=127.0.0.1 \
+    EXECUTOR_PORT=8765 \
+    MOBILERUN_CONFIG=/config/config.yaml \
+    MOBILERUN_STREAM_SCREENSHOTS=1
+
+VOLUME ["/config"]
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:3000/api/executor/health >/dev/null || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

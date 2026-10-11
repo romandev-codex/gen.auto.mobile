@@ -1,0 +1,37 @@
+import { z } from "zod"
+
+const envSchema = z.object({
+  MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
+  MONGODB_DB: z.string().min(1).optional(),
+  EXECUTOR_URL: z.url().default("http://127.0.0.1:8765"),
+  EXECUTOR_TOKEN: z.string().min(1, "EXECUTOR_TOKEN is required"),
+  /** When set, every request under /api/db must carry it as a bearer token. */
+  DB_API_TOKEN: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+  /**
+   * Set to `false` to pause schedules: ticks and queue dispatch stop starting
+   * runs (manual "run now" still works). Unset means active.
+   */
+  SCHEDULE_ACTIVE: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => v == null || v === "" || /^(1|true|yes|on)$/i.test(v)),
+})
+
+export type Env = z.infer<typeof envSchema>
+
+/** Parsed lazily so tests can set process.env before first use. */
+export function getEnv(): Env {
+  const parsed = envSchema.safeParse(process.env)
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map(
+      (i) => `${i.path.join(".")}: ${i.message}`
+    )
+    throw new Error(`Invalid environment: ${issues.join("; ")}`)
+  }
+  return parsed.data
+}
